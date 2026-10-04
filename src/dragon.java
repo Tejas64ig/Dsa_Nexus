@@ -13,3 +13,26 @@
                 g.setColor(alpha(c, 230)); g.fill(sp);
             }
         }
+        // head
+        AffineTransform at = g.getTransform();
+        g.translate(px[0], py[0]);
+        g.rotate(angle);
+        double sc = 1 + boost * 0.25;
+        g.scale(sc, sc);
+        g.setColor(alpha(ACCENT, 50)); g.fill(new Ellipse2D.Double(-15, -13, 30, 26));
+        Path2D horn = new Path2D.Double();
+        horn.moveTo(-3, -5); horn.lineTo(-13, -13); horn.lineTo(1, -7); horn.closePath();
+        Path2D horn2 = new Path2D.Double();
+        horn2.moveTo(-3, 5); horn2.lineTo(-13, 13); horn2.lineTo(1, 7); horn2.closePath();
+        g.setColor(alpha(ACCENT2, 230)); g.fill(horn); g.fill(horn2);
+        Path2D head = new Path2D.Double();
+        head.moveTo(-8, 0); head.curveTo(-8, -8, 4, -8, 13, -3); head.lineTo(15, 0); head.lineTo(13, 3);
+        head.curveTo(4, 8, -8, 8, -8, 0); head.closePath();
+        g.setPaint(new GradientPaint(-8, 0, ACCENT2, 14, 0, ACCENT));
+        g.fill(head);
+        g.setColor(Color.WHITE); g.fill(new Ellipse2D.Double(3, -4.5, 4, 4));
+        g.setColor(BG1);        g.fill(new Ellipse2D.Double(4.5, -3.6, 2, 2.4));
+        g.setTransform(at);
+        g.setComposite(old);
+    }
+}
