@@ -1,6 +1,3 @@
-<div align="center">
-
-<img src="assets/banner.svg" alt="DSA Nexus banner" width="100%"/>
 
 <br/>
 
