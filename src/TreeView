@@ -1,1 +1,202 @@
 
+package dsanexus;
+
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.awt.geom.*;
+import java.awt.image.BufferedImage;
+import java.util.*;
+import java.util.List;
+import java.util.function.Consumer;
+
+import static dsanexus.Theme.*;
+import static dsanexus.App.*;
+
+public class TreeView extends View {
+    static class TNode { int v; TNode l, r; double x, y, tx, ty, alpha, glow; boolean found; TNode(int v) { this.v = v; } }
+    TNode root; final JTextField field = styledField(4); int idx, count;
+
+    TreeView() {
+        addTool(field);
+        addTool(new HoverButton("Insert", () -> insert(parse())));
+        addTool(new HoverButton("Search", () -> search(parse())));
+        addTool(new HoverButton("Insert Random", () -> insert(1 + rnd.nextInt(99))));
+        addTool(new HoverButton("Clear", () -> { steps.clear(); root = null; bannerT = -1; }));
+        for (int v : new int[]{50, 30, 70, 20, 40, 60, 80}) { TNode n = insertNow(v); n.alpha = 1; }
+        field.setText("40");
+    }
+    int parse() { try { return Integer.parseInt(field.getText().trim()); } catch (Exception e) { return Integer.MIN_VALUE; } }
+    TNode insertNow(int v) {
+        // Create new node, start at center
+        TNode n = new TNode(v);
+        n.x = canvas.getWidth() / 2.0;
+        n.y = -30;
+        
+        // If tree is empty, new node becomes root
+        if (root == null) {
+            root = n;
+            return n;
+        }
+        
+        // Walk down the tree to find insertion point
+        TNode current = root;
+        while (true) {
+            if (v < current.v) {
+                // Go left
+                if (current.l == null) {
+                    current.l = n;
+                    break;
+                }
+                current = current.l;
+            } else {
+                // Go right
+                if (current.r == null) {
+                    current.r = n;
+                    break;
+                }
+                current = current.r;
+            }
+        }
+        return n;
+    }
+
+    List<TNode> pathTo(int v) {
+        List<TNode> path = new ArrayList<>();
+        TNode current = root;
+        
+        // Walk from root towards target value
+        while (current != null) {
+            path.add(current);
+            if (v == current.v) break;       // Found it
+            if (v < current.v)
+                current = current.l;          // Go left
+            else
+                current = current.r;          // Go right
+        }
+        return path;
+    }
+
+    void insert(int v) {
+        // Ignore invalid values or if an animation is currently running
+        if (v == Integer.MIN_VALUE || steps.busy()) return;
+        
+        // Find the path to the node (or where it should be)
+        List<TNode> path = pathTo(v);
+        
+        // Limit tree depth to 7
+        if (path.size() >= 7) return;
+        
+        // Animate highlighting each node along the path
+        for (TNode p : path) {
+            steps.add(0.32, () -> p.glow = 1);
+        }
+        
+        // If node already exists, stop here (no duplicate inserts)
+        if (!path.isEmpty() && path.get(path.size() - 1).v == v) return;
+        
+        // Finally, add the actual node and set its initial position
+        steps.add(0.4, () -> {
+            TNode n = insertNow(v);
+            // New node flies out of its parent
+            if (root != n && !path.isEmpty()) {
+                TNode parent = path.get(path.size() - 1);
+                n.x = parent.x;
+                n.y = parent.y;
+            }
+            n.glow = 1;
+        });
+    }
+
+    void search(int v) {
+        // Ignore invalid values or if an animation is currently running
+        if (v == Integer.MIN_VALUE || steps.busy()) return;
+        
+        // Find the path to the node
+        List<TNode> path = pathTo(v);
+        
+        // Animate highlighting each node along the path
+        for (TNode p : path) {
+            steps.add(0.45, () -> p.glow = 1);
+        }
+        
+        // Check if the last node in the path matches the target value
+        boolean hit = !path.isEmpty() && path.get(path.size() - 1).v == v;
+        
+        // Show the final result
+        steps.add(0, () -> {
+            if (hit) {
+                TNode target = path.get(path.size() - 1);
+                target.found = true;
+                complete("\u2713 FOUND " + v);
+                burst(target.x, target.y, 20);
+            } else {
+                complete("\u2717 " + v + " NOT FOUND");
+            }
+        });
+    }
+
+    // Count total nodes in the tree
+    int cnt(TNode n) {
+        if (n == null) return 0;
+        return 1 + cnt(n.l) + cnt(n.r);
+    }
+
+    // In-order layout: assigns x,y positions using in-order traversal
+    void layout(TNode n, int depth) {
+        if (n == null) return;
+        
+        // Recurse left subtree first (in-order)
+        layout(n.l, depth + 1);
+        
+        // Set target position for this node
+        n.tx = (idx++ + 1) * canvas.getWidth() / (count + 1.0);
+        n.ty = 70 + depth * 72;
+        
+        // Recurse right subtree
+        layout(n.r, depth + 1);
+    }
+    void animate(TNode n, double dt) {
+        if (n == null) return;
+        n.x = damp(n.x, n.tx, 7, dt); n.y = damp(n.y, n.ty, 7, dt);
+        n.alpha = damp(n.alpha, 1, 8, dt); n.glow = Math.max(0, n.glow - dt * 0.8);
+        if (n.found && n.glow <= 0) n.glow = 0.6;
+        animate(n.l, dt); animate(n.r, dt);
+    }
+    void update(double dt) { idx = 0; count = cnt(root); layout(root, 0); animate(root, dt); }
+    void drawEdges(Graphics2D g, TNode n) {
+        if (n == null) return;
+        for (TNode c : new TNode[]{n.l, n.r}) if (c != null) {
+            double hl = c.glow;
+            g.setColor(alpha(ACCENT, (int) (70 + 160 * hl))); g.setStroke(new BasicStroke((float) (1.5 + 2 * hl)));
+            g.draw(new Line2D.Double(n.x, n.y, c.x, c.y));
+            drawEdges(g, c);
+        }
+    }
+    void drawNodes(Graphics2D g, TNode n) {
+        if (n == null) return;
+        double r = 22 * (1 + 0.25 * n.glow);
+        Composite oc = g.getComposite();
+        g.setComposite(AlphaComposite.SrcOver.derive((float) Math.max(0, Math.min(1, n.alpha))));
+        g.setColor(new Color(0, 0, 0, 90)); g.fill(new Ellipse2D.Double(n.x - r + 4, n.y - r + 8, r * 2, r * 2));   // shadow
+        Color base = n.found ? OK : new Color(80, 130, 255);
+        if (n.glow > 0.02) for (int k = 4; k >= 1; k--) {
+            g.setColor(alpha(n.found ? OK : ACCENT, (int) (50 * n.glow / k))); g.setStroke(new BasicStroke(k * 3.5f));
+            g.draw(new Ellipse2D.Double(n.x - r, n.y - r, r * 2, r * 2));
+        }
+        g.setPaint(new RadialGradientPaint(new Point2D.Double(n.x - r * 0.35, n.y - r * 0.4), (float) (r * 1.6),
+                new float[]{0f, 1f}, new Color[]{shade(base, 1.7), shade(base, 0.45)}));                            // sphere
+        g.fill(new Ellipse2D.Double(n.x - r, n.y - r, r * 2, r * 2));
+        g.setColor(alpha(ACCENT, 200)); g.setStroke(new BasicStroke(1.3f));
+        g.draw(new Ellipse2D.Double(n.x - r, n.y - r, r * 2, r * 2));
+        g.setColor(Color.WHITE); g.setFont(new Font("SansSerif", Font.BOLD, 15));
+        centerText(g, String.valueOf(n.v), n.x, n.y);
+        g.setComposite(oc);
+        drawNodes(g, n.l); drawNodes(g, n.r);
+    }
+    void render(Graphics2D g, int w, int h) {
+        drawEdges(g, root); drawNodes(g, root);
+        g.setFont(new Font("SansSerif", Font.PLAIN, 12)); g.setColor(new Color(150, 180, 220, 150));
+        g.drawString("Type a value, then Insert or Search (max depth 7)", 30, 22);
+    }
+}
