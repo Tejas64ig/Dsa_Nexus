@@ -1,1 +1,283 @@
 
+package dsanexus;
+
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.awt.geom.*;
+import java.awt.image.BufferedImage;
+import java.util.*;
+import java.util.List;
+import java.util.function.Consumer;
+
+import static dsanexus.Theme.*;
+import static dsanexus.App.*;
+
+public class GraphView extends View {
+    static class GNode { String name; double x, y, glow; boolean vis, onPath; }
+    static class GEdge { GNode a, b; int w; double glow, tprog, pprog; boolean tgo, pgo; GNode tfrom, pfrom; }
+    final List<GNode> nodes = new ArrayList<>(); final List<GEdge> edges = new ArrayList<>();
+    boolean seeded; int nameCount; GNode dragNode; Point dragPos; boolean moving; double time;
+
+    GraphView() {
+        addTool(new HoverButton("BFS", () -> traverse(false)));
+        addTool(new HoverButton("DFS", () -> traverse(true)));
+        addTool(new HoverButton("Dijkstra", this::dijkstra));
+        addTool(new HoverButton("Reset Marks", this::resetMarks));
+        addTool(new HoverButton("Clear", () -> { resetMarks(); nodes.clear(); edges.clear(); nameCount = 0; }));
+        MouseAdapter ma = new MouseAdapter() {
+            public void mousePressed(MouseEvent e) {
+                GNode hit = nodeAt(e.getX(), e.getY());
+                if (SwingUtilities.isRightMouseButton(e)) { deleteAt(e.getX(), e.getY(), hit); return; }
+                if (hit == null) { addNode(e.getX(), e.getY()); return; }
+                dragNode = hit; moving = e.isShiftDown(); dragPos = e.getPoint();
+            }
+            public void mouseDragged(MouseEvent e) {
+                if (dragNode == null) return;
+                if (moving) { dragNode.x = e.getX(); dragNode.y = e.getY(); } else dragPos = e.getPoint();
+            }
+            public void mouseReleased(MouseEvent e) {
+                if (dragNode != null && !moving) {
+                    GNode t = nodeAt(e.getX(), e.getY());
+                    if (t != null && t != dragNode && findEdge(dragNode, t) == null) addEdge(dragNode, t);
+                }
+                dragNode = null;
+            }
+        };
+        canvas.addMouseListener(ma); canvas.addMouseMotionListener(ma);
+    }
+    GNode addNode(double x, double y) { GNode n = new GNode(); n.name = String.valueOf((char) ('A' + nameCount++ % 26)); n.x = x; n.y = y; n.glow = 1; nodes.add(n); return n; }
+    GEdge addEdge(GNode a, GNode b) { GEdge e = new GEdge(); e.a = a; e.b = b; e.glow = 1; edges.add(e); return e; }
+    GEdge findEdge(GNode a, GNode b) { for (GEdge e : edges) if ((e.a == a && e.b == b) || (e.a == b && e.b == a)) return e; return null; }
+    GNode nodeAt(double x, double y) { for (int i = nodes.size() - 1; i >= 0; i--) { GNode n = nodes.get(i); if (Math.hypot(n.x - x, n.y - y) < 24) return n; } return null; }
+    void deleteAt(double x, double y, GNode hit) {
+        if (hit != null) { nodes.remove(hit); edges.removeIf(e -> e.a == hit || e.b == hit); return; }
+        GEdge best = null; double bd = 9;
+        for (GEdge e : edges) { double d = Line2D.ptSegDist(e.a.x, e.a.y, e.b.x, e.b.y, x, y); if (d < bd) { bd = d; best = e; } }
+        if (best != null) edges.remove(best);
+    }
+    List<GEdge> incident(GNode n) { List<GEdge> r = new ArrayList<>(); for (GEdge e : edges) if (e.a == n || e.b == n) r.add(e); return r; }
+    GNode other(GEdge e, GNode n) { return e.a == n ? e.b : e.a; }
+    void resetMarks() {
+        steps.clear(); bannerT = -1;
+        for (GNode n : nodes) { n.vis = false; n.onPath = false; n.glow = 0; }
+        for (GEdge e : edges) { e.glow = 0; e.tgo = e.pgo = false; e.tprog = e.pprog = 0; }
+    }
+    void visit(GNode n, GEdge e, GNode from) {
+        n.vis = true; n.glow = 1;
+        if (e != null) { e.tgo = true; e.tfrom = from; e.tprog = 0; e.glow = 1; }
+    }
+    void traverse(boolean dfs) {
+        if (nodes.isEmpty() || steps.busy()) return;
+        resetMarks();
+        
+        List<Object[]> order = new ArrayList<>();
+        Set<GNode> seen = new HashSet<>();
+        GNode start = nodes.get(0);
+        
+        if (dfs) {
+            // Depth-First Search using recursion
+            dfsRec(start, null, null, seen, order);
+        } else {
+            // Breadth-First Search using a queue
+            Deque<GNode> queue = new ArrayDeque<>();
+            Map<GNode, Object[]> parent = new HashMap<>();
+            
+            // Start from first node
+            seen.add(start);
+            queue.add(start);
+            parent.put(start, new Object[]{start, null, null});
+            
+            // Process nodes level by level
+            while (!queue.isEmpty()) {
+                GNode current = queue.poll();
+                order.add(parent.get(current));
+                
+                // Visit all neighbours
+                for (GEdge e : incident(current)) {
+                    GNode neighbour = other(e, current);
+                    if (seen.add(neighbour)) {
+                        parent.put(neighbour, new Object[]{neighbour, e, current});
+                        queue.add(neighbour);
+                    }
+                }
+            }
+        }
+        
+        // Schedule step-by-step animation
+        for (Object[] o : order) {
+            steps.add(0.5, () -> visit((GNode) o[0], (GEdge) o[1], (GNode) o[2]));
+        }
+        steps.add(0, () -> complete("\u2713 " + (dfs ? "DFS" : "BFS") + " COMPLETE"));
+    }
+
+    void dfsRec(GNode u, GEdge parentEdge, GNode parentNode, Set<GNode> seen, List<Object[]> order) {
+        // Mark current node as visited
+        seen.add(u);
+        order.add(new Object[]{u, parentEdge, parentNode});
+        
+        // Recursively visit all unvisited neighbours
+        for (GEdge e : incident(u)) {
+            GNode neighbour = other(e, u);
+            if (!seen.contains(neighbour)) {
+                dfsRec(neighbour, e, u, seen, order);
+            }
+        }
+    }
+
+    void dijkstra() {
+        if (nodes.size() < 2 || steps.busy()) return;
+        resetMarks();
+        
+        GNode startNode = nodes.get(0);
+        GNode targetNode = nodes.get(nodes.size() - 1);
+        
+        // Maps to keep track of shortest distances and paths
+        Map<GNode, Integer> distances = new HashMap<>();
+        Map<GNode, GEdge> parentEdges = new HashMap<>();
+        Map<GNode, GNode> parentNodes = new HashMap<>();
+        
+        Set<GNode> processed = new HashSet<>();
+        List<GNode> visitOrder = new ArrayList<>();
+        
+        // Start from the first node with distance 0
+        distances.put(startNode, 0);
+        
+        while (true) {
+            // Find the unvisited node with the smallest distance
+            GNode current = null;
+            for (GNode node : nodes) {
+                if (!processed.contains(node) && distances.containsKey(node)) {
+                    if (current == null || distances.get(node) < distances.get(current)) {
+                        current = node;
+                    }
+                }
+            }
+            
+            // If all reachable nodes are processed, we are done
+            if (current == null) {
+                break;
+            }
+            
+            // Mark the current node as processed
+            processed.add(current);
+            visitOrder.add(current);
+            
+            // Relax all edges leaving the current node
+            for (GEdge edge : incident(current)) {
+                GNode neighbour = other(edge, current);
+                int newDistance = distances.get(current) + edge.w;
+                
+                // Update shortest distance if a better path is found
+                if (!processed.contains(neighbour)) {
+                    if (!distances.containsKey(neighbour) || newDistance < distances.get(neighbour)) {
+                        distances.put(neighbour, newDistance);
+                        parentEdges.put(neighbour, edge);
+                        parentNodes.put(neighbour, current);
+                    }
+                }
+            }
+            
+            // Early exit if we reached the target
+            if (current == targetNode) {
+                break;
+            }
+        }
+        
+        // Schedule step-by-step animation for exploring nodes
+        for (GNode node : visitOrder) {
+            steps.add(0.45, () -> visit(node, parentEdges.get(node), parentNodes.get(node)));
+        }
+        
+        // Animate the final shortest path if it was found
+        if (processed.contains(targetNode)) {
+            List<Object[]> path = new ArrayList<>();
+            GNode current = targetNode;
+            
+            // Trace back from target to start
+            while (current != startNode) {
+                path.add(0, new Object[]{parentEdges.get(current), parentNodes.get(current), current});
+                current = parentNodes.get(current);
+            }
+            
+            steps.add(0.3, () -> startNode.onPath = true);
+            
+            // Highlight the path sequentially
+            for (Object[] step : path) {
+                steps.add(0.55, () -> {
+                    GEdge edge = (GEdge) step[0];
+                    edge.pgo = true;
+                    edge.pfrom = (GNode) step[1];
+                    edge.pprog = 0;
+                    ((GNode) step[2]).onPath = true;
+                });
+            }
+            
+            int totalCost = distances.get(targetNode);
+            steps.add(0, () -> complete("\u2713 SHORTEST PATH " + startNode.name + "\u2192" + targetNode.name + "  COST " + totalCost));
+        } else {
+            steps.add(0, () -> complete("\u2717 NO PATH " + startNode.name + "\u2192" + targetNode.name));
+        }
+    }
+    void update(double dt) {
+        time += dt;
+        int w = canvas.getWidth(), h = canvas.getHeight();
+        if (!seeded && w > 50) {
+            seeded = true;
+            double[][] p = {{.10, .50}, {.30, .20}, {.30, .80}, {.52, .50}, {.72, .22}, {.90, .60}};
+            for (double[] q : p) addNode(q[0] * w, q[1] * h);
+            int[][] ed = {{0, 1}, {0, 2}, {1, 3}, {2, 3}, {3, 4}, {3, 5}, {4, 5}, {1, 4}};
+            for (int[] q : ed) addEdge(nodes.get(q[0]), nodes.get(q[1]));
+            for (GNode n : nodes) n.glow = 0;
+            for (GEdge e : edges) e.glow = 0;
+        }
+        for (GEdge e : edges) {
+            e.w = Math.max(1, (int) Math.round(Math.hypot(e.a.x - e.b.x, e.a.y - e.b.y) / 20));
+            e.glow = Math.max(0, e.glow - dt * 0.25);
+            if (e.tgo) e.tprog = Math.min(1, e.tprog + dt * 3);
+            if (e.pgo) e.pprog = Math.min(1, e.pprog + dt * 2.2);
+        }
+        for (GNode n : nodes) n.glow = Math.max(0, n.glow - dt * 0.6);
+    }
+    void render(Graphics2D g, int w, int h) {
+        g.setFont(new Font("SansSerif", Font.BOLD, 12));
+        for (GEdge e : edges) {
+            g.setColor(new Color(110, 150, 220, 90)); g.setStroke(new BasicStroke(1.6f)); g.draw(new Line2D.Double(e.a.x, e.a.y, e.b.x, e.b.y));
+            if (e.tgo && e.tprog > 0) {                                                   // traversal edge sweeps in
+                GNode f = e.tfrom == null ? e.a : e.tfrom, to = other(e, f);
+                g.setColor(alpha(ACCENT, 230)); g.setStroke(new BasicStroke(3f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                g.draw(new Line2D.Double(f.x, f.y, f.x + (to.x - f.x) * e.tprog, f.y + (to.y - f.y) * e.tprog));
+            }
+            if (e.pgo && e.pprog > 0) {                                                   // shortest path revealed progressively
+                GNode f = e.pfrom == null ? e.a : e.pfrom, to = other(e, f);
+                g.setColor(alpha(OK, 70)); g.setStroke(new BasicStroke(9f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                g.draw(new Line2D.Double(f.x, f.y, f.x + (to.x - f.x) * e.pprog, f.y + (to.y - f.y) * e.pprog));
+                g.setColor(OK); g.setStroke(new BasicStroke(4f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                g.draw(new Line2D.Double(f.x, f.y, f.x + (to.x - f.x) * e.pprog, f.y + (to.y - f.y) * e.pprog));
+            }
+            g.setColor(new Color(190, 210, 255, 190));
+            g.setFont(new Font("SansSerif", Font.BOLD, 11));
+            centerText(g, String.valueOf(e.w), (e.a.x + e.b.x) / 2 + 8, (e.a.y + e.b.y) / 2 - 8);
+        }
+        if (dragNode != null && !moving && dragPos != null) {                                // rubber-band connection
+            g.setColor(alpha(ACCENT, 160)); g.setStroke(new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 1f, new float[]{6, 5}, dashPhase(time, 30, 11)));
+            g.draw(new Line2D.Double(dragNode.x, dragNode.y, dragPos.x, dragPos.y));
+        }
+        for (GNode n : nodes) {
+            double r = 21 * (1 + 0.25 * n.glow);
+            Color base = n.onPath ? OK : (n.vis ? ACCENT2 : new Color(70, 120, 235));
+            g.setColor(new Color(0, 0, 0, 90)); g.fill(new Ellipse2D.Double(n.x - r + 3, n.y - r + 7, r * 2, r * 2));
+            for (int k = 4; k >= 1; k--) if (n.glow > 0.02 || n.vis) {
+                g.setColor(alpha(base, (int) ((n.vis ? 18 : 0) + 55 * n.glow) / k)); g.setStroke(new BasicStroke(k * 3.5f));
+                g.draw(new Ellipse2D.Double(n.x - r, n.y - r, r * 2, r * 2));
+            }
+            g.setPaint(new RadialGradientPaint(new Point2D.Double(n.x - r * 0.35, n.y - r * 0.4), (float) (r * 1.6), new float[]{0f, 1f},
+                    new Color[]{shade(base, 1.7), shade(base, 0.45)}));
+            g.fill(new Ellipse2D.Double(n.x - r, n.y - r, r * 2, r * 2));
+            g.setColor(alpha(ACCENT, 190)); g.setStroke(new BasicStroke(1.3f)); g.draw(new Ellipse2D.Double(n.x - r, n.y - r, r * 2, r * 2));
+            g.setColor(Color.WHITE); g.setFont(new Font("SansSerif", Font.BOLD, 15)); centerText(g, n.name, n.x, n.y);
+        }
+        g.setFont(new Font("SansSerif", Font.PLAIN, 12)); g.setColor(new Color(150, 180, 220, 150));
+        g.drawString("Click: add node  \u2022  Drag node\u2192node: connect  \u2022  Shift+drag: move  \u2022  Right-click: delete  \u2022  Algorithms start at the first node; Dijkstra ends at the last", 30, 22);
+    }
+}
